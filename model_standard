@@ -18,6 +18,7 @@ import warnings
 from multiprocessing.pool import Pool
 from multiprocessing import get_start_method
 from multiprocessing import get_context
+from numba import njit
 
 print(" ")
 print(" ")
@@ -1721,6 +1722,8 @@ print('Scaling for f27 through f29 =',wtx)
 
 #--------------------------------------------------------------------------------------------------------
 #Function to minimize in order to solve for mole fractions and phase abundances at equilibrium
+
+@njit
 def func(var):
     P=var[29]
     Pstd=1.0
@@ -2163,7 +2166,9 @@ print('')
 
 #--------------------------------------------------------------------------------------------------------
 # Our model function
-def model(theta):
+@njit
+def model(theta, y_model):
+    # y_model = np.zeros(numvar)
     P=theta[29]
     Pstd=1.0
     # Model natural log of equilibrium KDs (no pressures in these quotients)
@@ -2259,8 +2264,10 @@ def model(theta):
 # DEFINE LIKELIHOOD FUNCTION, making use of model function above.
 # Notice by using the sum, this is the logarithm of the likelihood probability.
 # The total probability would be the product of exponentials of the square differences etc.
-def lnlike(theta,y,yerr):
-    y_model=model(theta)
+
+@njit
+def lnlike(theta,y,yerr, y_model):
+    y_model=model(theta, y_model)
     diffs=((y-y_model)**2.0)/yerr**2.0
     lnlike=-0.5*sum(diffs)
     return lnlike
@@ -2269,6 +2276,8 @@ def lnlike(theta,y,yerr):
 # This function output is prescribed by what emcee uses for the prior
 # probabilities, e.g., 0 for in range, -infinity if out the range for the priors.
 # Formulated this way, these are uninformative priors.
+
+@njit
 def lnprior(theta):
     # Priors on mole fractions require them to be between 0 and 1 else ln(probability) is -infinity
     # This structure relies on first encountered return applies
@@ -2293,11 +2302,13 @@ def lnprior(theta):
 # We add the output from the functions above because they return logs of
 # probabilities. If outside of priors, return infinitely bad probability
 # as -inf since this would be the log of a very tiny number.
-def lnprob(theta,y,yerr):
+
+@njit
+def lnprob(theta,y,yerr, y_model):
     lp=lnprior(theta)
     if lp == -np.inf:
         return -np.inf
-    like=lnlike(theta,y,yerr)
+    like=lnlike(theta,y,yerr, y_model)
     if math.isnan(like):
         return -np.inf
     return lp+like
@@ -2305,10 +2316,10 @@ def lnprob(theta,y,yerr):
 # Make a tuple with the data to be used by emcee, this will be a list of
 # arguments that tells emcee the list required to call the probability function,
 # so this should match the lnprob argument list
-data = (y,yerr)
+data = (y,yerr, y_model)
 
 # Print current model (not parameters) before starting MCMC
-print('y(current model)= \n',model(soln.x))
+print('y(current model)= \n',model(soln.x, y_model))
 print('')
 print('yerr(errors for model)= \n ',yerr)
 print('')
@@ -2335,16 +2346,18 @@ p0=[(theta)+ranoffset*np.random.randn(n) for i in range(nwalkers)]  #+1.0e-9*np.
 # for emcee.
 def main(p0,nwalkers,niter,n,lnprob,data):
     ctx = get_context('fork')
-    with Pool(6,context=ctx) as pool:
-        sampler = emcee.EnsembleSampler(nwalkers, n, lnprob, args=data, pool=pool)
-    
-        print("Initial burn in running...")
-        pos,_, _ = sampler.run_mcmc(p0,500)  # initial run, save position (i.e., model parameters)
-    
-        sampler.reset()  # reset results from sampler for actual search
-    
-        print("Running full MCMC search...")
-        pos, prob, state = sampler.run_mcmc(pos, niter_eff, skip_initial_state_check=False, progress=True, thin_by=thin) # run actual search starting at burn-in position
+    # with Pool(6,context=ctx) as pool:
+    # sampler = emcee.EnsembleSampler(nwalkers, n, lnprob, args=data, pool=pool)
+    sampler = emcee.EnsembleSampler(nwalkers, n, lnprob, args=data)
+
+
+    print("Initial burn in running...")
+    pos,_, _ = sampler.run_mcmc(p0,500)  # initial run, save position (i.e., model parameters)
+
+    sampler.reset()  # reset results from sampler for actual search
+
+    print("Running full MCMC search...")
+    pos, prob, state = sampler.run_mcmc(pos, niter_eff, skip_initial_state_check=False, progress=True, thin_by=thin) # run actual search starting at burn-in position
     
     return sampler, pos, prob, state
 
@@ -2372,7 +2385,7 @@ print('sampler.flatlnprobability shape = ',np.shape(posteriors))
 result=samples[np.argmax(sampler.flatlnprobability)]
 
 # Best-fit final model consisting of equilibrium constants, total moles of components, and mole fraction sums
-best_fit_model = model(result)
+best_fit_model = model(result, y_model)
 
 # Calculate goodness of fit for this best-fit model
 chi_square=sum(((y-best_fit_model)**2.0)/yerr**2.0)
@@ -2428,7 +2441,7 @@ xH2_xH2O_silicate=result[7]/result[8]
 print('')
 print('xH2/xH2O silicate =',xH2_xH2O_silicate)
 DIW_apparent=2.0*log((result[3]+result[4])/0.85)
-DIW_actual=2.0*log((result[3]+result[4])/result[11])
+DIW_actual=2.0*log((result[3]+result[4]/result[11]))
 print('DIW_silicate_for_xFe_metal=0.85 =',DIW_apparent)
 print('DIW_actual = ',DIW_actual)
 
@@ -2906,7 +2919,3 @@ copy_inputs(name_initial)
 
 
 print('End.')
-
-
-
-
